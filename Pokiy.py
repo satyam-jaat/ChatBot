@@ -7,6 +7,7 @@ from collections import deque
 from google.colab import drive
 from IPython.display import display, Audio
 import time
+import datetime
 
 # Mount Google Drive
 drive.mount('/content/drive')
@@ -54,7 +55,20 @@ class ChatBot:
 
     # ------------------- GENERAL CONVERSATION -------------------
     def handle_general_conversation(self, user_input):
-        """Handle general inputs and return appropriate responses."""
+        """Respond to general conversation inputs, including date and time queries."""
+        user_input_lower = user_input.lower()
+
+        # Check if the user is asking about time
+        if any(phrase in user_input_lower for phrase in ["what time is it","what is time now", "can you tell me the current time","tell me current time", "time", "time is","what is the time now","current time","tell what is the time now", "tell me the time"]):
+            current_time = datetime.datetime.now().strftime("%I:%M %p")
+            return f"The current time is {current_time}."
+
+        # Check if the user is asking about date
+        if any(phrase in user_input_lower for phrase in ["what's the date","date","what is date today","today date is", "what is the date","what is today", "what day", "day?","which day is today", "current date", "today's date"]):
+            current_date = datetime.datetime.now().strftime("%B %d, %Y")
+            return f"Today's date is {current_date}."
+
+        # Proceed with normal general conversation handling
         best_response = None
         best_score = 0
 
@@ -77,7 +91,7 @@ class ChatBot:
 
         question_data = random.choice(available_questions)
         self.question_queue.append(question_data["question"])
-        
+
         self.total_questions_asked += 1  # Track total questions asked
 
         return question_data
@@ -142,11 +156,11 @@ print("Chatbot: Hello! Type 'exit' to end or 'switch mode' to change modes.")
 
 while True:
     user_input = input("You: ").strip()
-    
+
     if user_input.lower() == 'exit':
         print("Chatbot: Goodbye!")
         break
-    
+
     if user_input.lower() == 'switch mode':
         print(bot.switch_mode())
         continue
@@ -157,11 +171,11 @@ while True:
         bot.speak(response)
 
  # Technical Mode: Ask and evaluate technical questions
-    else:  
+    else:
         question_data = bot.ask_technical_question()
         print(f"Chatbot: {question_data['question']}")
         bot.speak(question_data['question'])
-        
+
         user_answer = input("Your answer (or type 'skip' to pass): ").strip()
 
         if user_answer.lower() == 'exit':
@@ -176,25 +190,87 @@ while True:
             continue
 
         score, best_match = bot.evaluate_technical_answer(user_answer, question_data["answers"])
-        
+
         if score > 0:
             bot.total_questions_answered += 1  # Track answered questions
 
         print(f"Chatbot: Your answer matched {score:.1f}% with our records.")
-        
+
         if score < 80:
             print(f"Suggested answer: {best_match}")
 
-            
-# Show performance summary at the end
+
+# ------------------- SAVE PERFORMANCE DATA ON EXIT -------------------
+
+performance_file = "/content/drive/My Drive/performance.json"
+
+def load_performance_data():
+    """Load existing performance data from the JSON file."""
+    try:
+        with open(performance_file, 'r') as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        data = {"performance": []}  # Create empty structure if file is missing or corrupted
+    return data
+
+
+def save_performance(bot):
+    """Save chatbot performance data to performance.json categorized by date."""
+    today_date = datetime.datetime.now().strftime("%Y-%m-%d")
+
+    # Load existing data
+    data = load_performance_data()
+
+    # Check if today's date already exists in "performance"
+    date_entry = next((entry for entry in data["performance"] if entry["date"] == today_date), None)
+
+    performance_score = 0
+    if bot.total_questions_asked - bot.total_skipped > 0:
+        performance_score = (bot.total_questions_answered / (bot.total_questions_asked - bot.total_skipped)) * 100
+
+    if date_entry:
+        # Update existing entry
+        date_entry["total_questions_asked"] += bot.total_questions_asked
+        date_entry["total_questions_answered"] += bot.total_questions_answered
+        date_entry["total_questions_skipped"] += bot.total_skipped
+        # Adding the current session's performance score to get a weighted average
+        date_entry["performance_scores"].append(performance_score)
+    else:
+        # Create a new entry for today
+        data["performance"].append({
+            "date": today_date,
+            "total_questions_asked": bot.total_questions_asked,
+            "total_questions_answered": bot.total_questions_answered,
+            "total_questions_skipped": bot.total_skipped,
+            "performance_scores": [performance_score]  # Store multiple performance scores for weighted average
+        })
+
+    # Calculate the overall performance by averaging the performance scores
+    date_entry = next((entry for entry in data["performance"] if entry["date"] == today_date), None)
+    if date_entry and "performance_scores" in date_entry:
+        # Compute weighted average
+        scores = date_entry["performance_scores"]
+        weighted_average = sum(scores) / len(scores)
+        date_entry["overall_performance"] = weighted_average  # Store the final average performance score
+
+    # Save updated data back to JSON
+    with open(performance_file, 'w') as f:
+        json.dump(data, f, indent=4)
+
+# ------------------- ON EXIT, SHOW SUMMARY AND SAVE DATA -------------------
 print("\n===== Chatbot Performance Summary =====")
 print(f"Total Questions Asked: {bot.total_questions_asked}")
 print(f"Total Questions Answered: {bot.total_questions_answered}")
 print(f"Total Questions Skipped: {bot.total_skipped}")
 
-# Calculate performance based on answered questions only
+# Calculate performance percentage
+performance_score = 0
 if bot.total_questions_asked - bot.total_skipped > 0:
     performance_score = (bot.total_questions_answered / (bot.total_questions_asked - bot.total_skipped)) * 100
     print(f"Overall Performance: {performance_score:.1f}%")
 else:
     print("Overall Performance: 0% (No questions answered)")
+
+# Save performance data before exiting
+save_performance(bot)
+print("Performance data has been saved to Google Drive.")
