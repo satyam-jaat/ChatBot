@@ -11,9 +11,15 @@ Before running the chatbot, ensure you have the necessary dependencies installed
 
 ### 1. Install Required Libraries
 To run Pokiy, you need to install the following Python libraries. Run the command below to install them:
+Note: these commands are for google colab platform;
 
 ```bash
-pip install spacy speechrecognition gTTS google-colab ipython
+pip install spacy
+python -m spacy download en_core_web_sm
+pip install SpeechRecognition
+pip install gTTS
+pip install google-colab
+python -m spacy download en_core_web_md
 ```
 ## 🔹 2️⃣ Clone the Repository  
 Run the following command to clone the repository and navigate into the project folder:  
