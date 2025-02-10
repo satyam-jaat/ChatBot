@@ -1,0 +1,15 @@
+{
+    "performance": [
+        {
+            "date": "2025-02-09",
+            "total_questions_asked": 4,
+            "total_questions_answered": 2,
+            "total_questions_skipped": 2,
+            "performance_scores": [
+                100.0,
+                0
+            ],
+            "overall_performance": 50.0
+        }
+    ]
+}
