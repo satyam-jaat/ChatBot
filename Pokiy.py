@@ -5,9 +5,12 @@ import speech_recognition as sr
 from gtts import gTTS
 from collections import deque
 from google.colab import drive
-from IPython.display import display, Audio
+from IPython.display import display, Audio, Javascript
 import time
 import datetime
+from base64 import b64decode
+from google.colab.output import eval_js
+from pydub import AudioSegment
 
 # Mount Google Drive
 drive.mount('/content/drive')
@@ -18,33 +21,81 @@ nlp = spacy.load("en_core_web_md")
 # Path to the existing data.json file in Drive
 data_path = "/content/drive/My Drive/data.json"
 
+# Audio recording functions for Colab
+RECORD = """
+const sleep = time => new Promise(resolve => setTimeout(resolve, time))
+const b2text = blob => new Promise(resolve => {
+  const reader = new FileReader()
+  reader.onloadend = e => resolve(e.srcElement.result)
+  reader.readAsDataURL(blob)
+})
+var record = time => new Promise(async resolve => {
+  stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+  recorder = new MediaRecorder(stream)
+  chunks = []
+  recorder.ondataavailable = e => chunks.push(e.data)
+  recorder.start()
+  await sleep(time)
+  recorder.onstop = async () => {
+    blob = new Blob(chunks)
+    text = await b2text(blob)
+    resolve(text)
+  }
+  recorder.stop()
+})
+"""
+
+def record_audio(time=5):
+    """Record audio using JavaScript in Colab and ensure it's saved as a PCM WAV file."""
+    display(Javascript(RECORD))
+    try:
+        js_result = eval_js(f'record({time * 1000})')
+        if not js_result:
+            print("No audio recorded. Please try again.")
+            return None
+        
+        # Decode the base64 audio data
+        audio_data = b64decode(js_result.split(',')[1])
+        
+        # Save the raw audio as a temporary file
+        temp_file = 'temp_audio.webm'
+        with open(temp_file, 'wb') as f:
+            f.write(audio_data)
+        
+        # Convert the recorded audio to PCM WAV format using pydub
+        audio = AudioSegment.from_file(temp_file, format="webm")
+        output_file = 'audio.wav'
+        audio.export(output_file, format="wav")
+        
+        return output_file
+    except Exception as e:
+        print(f"Error during audio recording or conversion: {e}")
+        return None
+
 class ChatBot:
     def __init__(self, data_path):
         self.data = self.load_data(data_path)
         self.question_queue = deque(maxlen=5)
         self.mode = "general_mode"  # Default mode
         self.similarity_threshold = 0.75
+        self.recognizer = sr.Recognizer()
 
         self.total_questions_asked = 0
         self.total_questions_answered = 0
         self.total_skipped = 0
 
-
     def load_data(self, path):
         with open(path, 'r') as f:
             return json.load(f)
 
-    # ------------------- SIMILARITY CHECKS -------------------
     def get_input_similarity(self, user_input, stored_inputs):
         """Calculate similarity for general inputs."""
         doc1 = nlp(user_input.lower())
-
         best_score = 0
         for stored_input in stored_inputs:
             doc2 = nlp(stored_input.lower())
             score = doc1.similarity(doc2)
             best_score = max(best_score, score)
-
         return best_score
 
     def get_question_similarity(self, user_question, stored_question):
@@ -53,18 +104,17 @@ class ChatBot:
         doc2 = nlp(stored_question.lower())
         return doc1.similarity(doc2)
 
-    # ------------------- GENERAL CONVERSATION -------------------
     def handle_general_conversation(self, user_input):
         """Respond to general conversation inputs, including date and time queries."""
         user_input_lower = user_input.lower()
 
         # Check if the user is asking about time
-        if any(phrase in user_input_lower for phrase in ["what time is it","what is time now", "can you tell me the current time","tell me current time", "time", "time is","what is the time now","current time","tell what is the time now", "tell me the time"]):
+        if any(phrase in user_input_lower for phrase in ["what time is it", "What is time", "current time", "tell me the time"]):
             current_time = datetime.datetime.now().strftime("%I:%M %p")
             return f"The current time is {current_time}."
 
         # Check if the user is asking about date
-        if any(phrase in user_input_lower for phrase in ["what's the date","date","what is date today","today date is", "what is the date","what is today", "what day", "day?","which day is today", "current date", "today's date"]):
+        if any(phrase in user_input_lower for phrase in ["what's the date", "today's date", "current date"]):
             current_date = datetime.datetime.now().strftime("%B %d, %Y")
             return f"Today's date is {current_date}."
 
@@ -80,7 +130,6 @@ class ChatBot:
 
         return best_response if best_response else "I'm not sure about that."
 
-    # ------------------- TECHNICAL QUESTIONS -------------------
     def ask_technical_question(self):
         """Ask a technical question from the dataset and track the count."""
         available_questions = [q for q in self.data["technical"] if q["question"] not in self.question_queue]
@@ -95,7 +144,6 @@ class ChatBot:
         self.total_questions_asked += 1  # Track total questions asked
 
         return question_data
-
 
     def evaluate_technical_answer(self, user_answer, correct_answers):
         """Evaluate user's answer based on similarity with correct answers."""
@@ -131,38 +179,68 @@ class ChatBot:
 
         return best_question, best_score
 
-    # ------------------- MODE SWITCHING -------------------
     def switch_mode(self):
         """Toggle between Technical and General modes."""
         self.mode = "technical_mode" if self.mode == "general_mode" else "general_mode"
         return f"Switched to {self.mode.replace('_', ' ')} mode."
 
-    # ------------------- SPEECH OUTPUT -------------------
     def speak(self, text):
         """Convert text to speech and play it."""
         tts = gTTS(text=text, lang='en')
+
         audio_path = "/content/response.mp3"
         tts.save(audio_path)
+        audio = AudioSegment.from_file(audio_path)
+        duration_seconds = len(audio) / 1000.0 
         display(Audio(audio_path, autoplay=True))
 
         # Estimate wait time based on word count (2.5 words per second)
         time.sleep(len(text.split()) / 2.5)
 
+    def speech_to_text(self, audio_file='audio.wav'):
+        """Convert speech to text using Google Speech Recognition."""
+        try:
+            with sr.AudioFile(audio_file) as source:
+                audio = self.recognizer.record(source)
+            return self.recognizer.recognize_google(audio)
+        except sr.UnknownValueError:
+            return None
+        except Exception as e:
+            print(f"Error in speech recognition: {e}")
+            return None
+
 # Initialize chatbot with data.json
 bot = ChatBot(data_path)
 
 # ------------------- MAIN CHAT LOOP -------------------
-print("Chatbot: Hello! Type 'exit' to end or 'switch mode' to change modes.")
+print("Chatbot: Hello! Say 'exit' to end or 'switch mode' to change modes.")
+bot.speak("Hello! Say 'exit' to end or 'switch mode' to change modes.")
 
 while True:
-    user_input = input("You: ").strip()
+    # Get user input through speech
+    print("\nSpeak your message now...")
+    audio_file = record_audio(5)
+    
+    # Fallback to text input if speech recognition fails or no audio is recorded
+    if not audio_file:
+        user_input = input("Speech not recognized or failed to record. Please type your message: ").strip()
+    else:
+        user_input = bot.speech_to_text(audio_file)
+        if not user_input:
+            user_input = input("Speech not recognized. Please type your message: ").strip()
+        else:
+            print(f"You (Speech): {user_input}")
 
+    # Process input
     if user_input.lower() == 'exit':
         print("Chatbot: Goodbye!")
+        bot.speak("Goodbye!")
         break
 
     if user_input.lower() == 'switch mode':
-        print(bot.switch_mode())
+        response = bot.switch_mode()
+        print(f"Chatbot: {response}")
+        bot.speak(response)
         continue
 
     if bot.mode == "general_mode":
@@ -170,23 +248,36 @@ while True:
         print(f"Chatbot: {response}")
         bot.speak(response)
 
- # Technical Mode: Ask and evaluate technical questions
+    # Technical Mode: Ask and evaluate technical questions
     else:
         question_data = bot.ask_technical_question()
         print(f"Chatbot: {question_data['question']}")
-        bot.speak(question_data['question'])
+        bot.speak(question_data['question'])  # Blocks until question is fully spoken
 
-        user_answer = input("Your answer (or type 'skip' to pass): ").strip()
+        # Get user's answer via speech
+        print("\nSpeak your answer now...")
+        answer_audio_file = record_audio(5)
+        
+        if not answer_audio_file:
+            user_answer = input("Speech not recognized or failed to record. Please type your answer: ").strip()
+        else:
+            user_answer = bot.speech_to_text(answer_audio_file)
+            if not user_answer:
+                user_answer = input("Speech not recognized. Please type your answer: ").strip()
+            else:
+                print(f"You (Speech): {user_answer}")
 
         if user_answer.lower() == 'exit':
             print("Chatbot: Goodbye!")
             break
         if user_answer.lower() == 'switch mode':
-            print(bot.switch_mode())
+            response = bot.switch_mode()
+            print(f"Chatbot: {response}")
+            bot.speak(response)
             continue
         if user_answer.lower() in ['skip', 'pass']:  # Allow skipping
             bot.total_skipped += 1  # Track skipped questions
-            print("Chatbot: Question skipped!")
+            print("Chatbot: Question skipped! Moving to the next one.")
             continue
 
         score, best_match = bot.evaluate_technical_answer(user_answer, question_data["answers"])
@@ -194,14 +285,14 @@ while True:
         if score > 0:
             bot.total_questions_answered += 1  # Track answered questions
 
-        print(f"Chatbot: Your answer matched {score:.1f}% with our records.")
-
+        response = f"Your answer matched {score:.1f}% with our records."
         if score < 80:
-            print(f"Suggested answer: {best_match}")
-
+            response += f" Suggested answer: {best_match}"
+        
+        print(f"Chatbot: {response}")
+        bot.speak(response)
 
 # ------------------- SAVE PERFORMANCE DATA ON EXIT -------------------
-
 performance_file = "/content/drive/My Drive/performance.json"
 
 def load_performance_data():
@@ -212,7 +303,6 @@ def load_performance_data():
     except (FileNotFoundError, json.JSONDecodeError):
         data = {"performance": []}  # Create empty structure if file is missing or corrupted
     return data
-
 
 def save_performance(bot):
     """Save chatbot performance data to performance.json categorized by date."""
@@ -233,7 +323,6 @@ def save_performance(bot):
         date_entry["total_questions_asked"] += bot.total_questions_asked
         date_entry["total_questions_answered"] += bot.total_questions_answered
         date_entry["total_questions_skipped"] += bot.total_skipped
-        # Adding the current session's performance score to get a weighted average
         date_entry["performance_scores"].append(performance_score)
     else:
         # Create a new entry for today
@@ -242,16 +331,15 @@ def save_performance(bot):
             "total_questions_asked": bot.total_questions_asked,
             "total_questions_answered": bot.total_questions_answered,
             "total_questions_skipped": bot.total_skipped,
-            "performance_scores": [performance_score]  # Store multiple performance scores for weighted average
+            "performance_scores": [performance_score]
         })
 
     # Calculate the overall performance by averaging the performance scores
     date_entry = next((entry for entry in data["performance"] if entry["date"] == today_date), None)
     if date_entry and "performance_scores" in date_entry:
-        # Compute weighted average
         scores = date_entry["performance_scores"]
-        weighted_average = sum(scores) / len(scores)
-        date_entry["overall_performance"] = weighted_average  # Store the final average performance score
+        weighted_average = sum(scores) / len(scores) if scores else 0
+        date_entry["overall_performance"] = weighted_average
 
     # Save updated data back to JSON
     with open(performance_file, 'w') as f:
